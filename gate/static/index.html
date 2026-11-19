@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gate Control</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">⛟</span>
+    <div>
+      <h1>Automated Gate Processing</h1>
+      <div class="sub">Yard Management System · Computer-vision gate</div>
+    </div>
+  </div>
+  <div class="controls">
+    <span id="conn" class="pill off">offline</span>
+    <label class="sim">
+      <span>Simulator</span>
+      <input type="checkbox" id="simToggle">
+      <span class="switch"></span>
+    </label>
+    <label class="interval">every
+      <select id="simInterval">
+        <option value="3">3 s</option><option value="6" selected>6 s</option>
+        <option value="10">10 s</option><option value="20">20 s</option>
+      </select> / lane
+    </label>
+    <button id="resetBtn" class="ghost" title="Delete all events and reseed demo data">Reset demo</button>
+  </div>
+</header>
+
+<section class="kpis" id="kpis">
+  <div class="kpi"><div class="v" id="kTotal">0</div><div class="l">Trucks processed (24h)</div></div>
+  <div class="kpi"><div class="v" id="kAuto">0%</div><div class="l">Cleared without a guard</div></div>
+  <div class="kpi"><div class="v" id="kMs">0 ms</div><div class="l">Avg. processing time</div></div>
+  <div class="kpi"><div class="v" id="kExc">0</div><div class="l">Open exceptions</div></div>
+  <div class="kpi"><div class="v" id="kPending">0</div><div class="l">Scheduled appointments</div></div>
+  <div class="kpi"><div class="v" id="kSim">–</div><div class="l">Simulator decision accuracy</div></div>
+</section>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="live">Live lanes</button>
+  <button class="tab" data-tab="exceptions">Exceptions <span id="excBadge" class="badge">0</span></button>
+  <button class="tab" data-tab="appointments">Appointments &amp; ASNs</button>
+</nav>
+
+<main>
+  <section id="tab-live" class="tabpane active">
+    <div id="lanes" class="lanes"></div>
+    <h2>Gate events</h2>
+    <div class="filters">
+      <select id="fDecision"><option value="">All decisions</option></select>
+      <select id="fLane"><option value="">All lanes</option></select>
+    </div>
+    <div class="tablewrap"><table class="events">
+      <thead><tr><th>Time</th><th>Lane</th><th>Decision</th><th>Plate</th><th>Trailer</th><th>USDOT</th>
+        <th>Seal</th><th>Carrier</th><th>Destination</th><th>ms</th></tr></thead>
+      <tbody id="eventRows"></tbody>
+    </table></div>
+  </section>
+
+  <section id="tab-exceptions" class="tabpane">
+    <p class="hint">Trucks held at the gate that need a guard decision. Healthy loads are never queued here.</p>
+    <div id="excList" class="exc-list"></div>
+  </section>
+
+  <section id="tab-appointments" class="tabpane">
+    <details class="card newappt">
+      <summary>+ New appointment (ASN)</summary>
+      <form id="apptForm">
+        <label>Carrier <select name="carrier_dot" id="carrierSel" required></select></label>
+        <label>Tractor plate <input name="tractor_plate" required maxlength="8" placeholder="7KXR392"></label>
+        <label>Trailer (ISO 6346) <input name="trailer_number" required placeholder="BWFU 123456 7"></label>
+        <label>Seal number <input name="seal_number" placeholder="SL1234567"></label>
+        <label>Scheduled <input name="scheduled_at" type="datetime-local"></label>
+        <label>Dock door <input name="dock_door" value="D01" maxlength="4"></label>
+        <button type="submit">Create</button>
+        <span id="apptMsg" class="msg"></span>
+      </form>
+    </details>
+    <div class="filters">
+      <select id="fStatus"><option value="SCHEDULED">Scheduled</option><option value="ARRIVED">Arrived</option><option value="">All</option></select>
+    </div>
+    <div class="tablewrap"><table class="events">
+      <thead><tr><th>Appointment</th><th>Scheduled</th><th>Carrier</th><th>USDOT</th><th>Plate</th><th>Trailer</th>
+        <th>ASN</th><th>Seal</th><th>Dock</th><th>Status</th></tr></thead>
+      <tbody id="apptRows"></tbody>
+    </table></div>
+  </section>
+</main>
+
+<dialog id="detail">
+  <div class="dlg-head">
+    <h3 id="dTitle">Event</h3>
+    <button class="ghost" onclick="document.getElementById('detail').close()">✕</button>
+  </div>
+  <div id="dBody"></div>
+</dialog>
+
+<input type="file" id="uploader" accept="image/*" multiple hidden>
+<script src="app.js"></script>
+</body>
+</html>
