@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS carriers (
     name        TEXT NOT NULL,
     dot_number  TEXT NOT NULL UNIQUE,
     mc_number   TEXT,
-    status      TEXT NOT NULL DEFAULT 'ACTIVE'      -- ACTIVE | SUSPENDED
+    status      TEXT NOT NULL DEFAULT 'ACTIVE',     -- ACTIVE | SUSPENDED
+    insurance_expiry TEXT                           -- YYYY-MM-DD
 );
 CREATE TABLE IF NOT EXISTS asns (
     id              INTEGER PRIMARY KEY,
@@ -24,6 +25,9 @@ CREATE TABLE IF NOT EXISTS asns (
     trailer_number  TEXT NOT NULL,
     seal_number     TEXT,
     pallet_count    INTEGER DEFAULT 0,
+    trailer_type    TEXT NOT NULL DEFAULT 'DRY_VAN',  -- DRY_VAN | REEFER | FLATBED
+    load_class      TEXT NOT NULL DEFAULT 'STANDARD', -- STANDARD | PERISHABLE | CROSS_DOCK
+    due_by          TEXT,                       -- cross-dock: outbound departure the freight must make
     shipper         TEXT,
     expected_arrival TEXT,
     status          TEXT NOT NULL DEFAULT 'EXPECTED'  -- EXPECTED | ARRIVED | EXCEPTION
@@ -38,8 +42,11 @@ CREATE TABLE IF NOT EXISTS appointments (
     direction       TEXT NOT NULL DEFAULT 'INBOUND',  -- INBOUND | OUTBOUND
     scheduled_at    TEXT NOT NULL,
     dock_door       TEXT,
-    status          TEXT NOT NULL DEFAULT 'SCHEDULED', -- SCHEDULED | ARRIVED | CANCELLED
-    arrived_at      TEXT
+    status          TEXT NOT NULL DEFAULT 'SCHEDULED', -- SCHEDULED | ARRIVED | NO_SHOW | CANCELLED
+    arrived_at      TEXT,
+    driver_phone    TEXT,                       -- E.164, from the carrier / TMS
+    driver_language TEXT DEFAULT 'en',          -- en | es | hi | pa | ru
+    driver_token    TEXT                        -- secret for the driver's live instruction page
 );
 CREATE TABLE IF NOT EXISTS gate_events (
     id              INTEGER PRIMARY KEY,
@@ -62,11 +69,97 @@ CREATE TABLE IF NOT EXISTS gate_events (
     detail          TEXT,                       -- JSON blob (all OCR text, match scores ...)
     override_decision TEXT, override_by TEXT, override_note TEXT, override_at TEXT
 );
+CREATE TABLE IF NOT EXISTS trips (            -- inbound trucks tracked by GPS telematics
+    id              INTEGER PRIMARY KEY,
+    appointment_id  INTEGER REFERENCES appointments(id),
+    vehicle_id      TEXT,
+    plate           TEXT,
+    source          TEXT NOT NULL,              -- sim | telematics
+    status          TEXT NOT NULL DEFAULT 'EN_ROUTE',  -- EN_ROUTE | ARRIVED | CANCELLED
+    started_at      TEXT NOT NULL,
+    last_ping_at    TEXT,
+    lat REAL, lon REAL, speed_kph REAL, heading REAL,
+    distance_km     REAL,                       -- remaining road distance
+    eta_at TEXT, eta_low_at TEXT, eta_high_at TEXT, static_eta_at TEXT,
+    conditions      TEXT,                       -- JSON: traffic / weather along route
+    arrived_at      TEXT
+);
+CREATE TABLE IF NOT EXISTS eta_predictions (  -- prediction log, scored when the truck arrives
+    id INTEGER PRIMARY KEY,
+    trip_id INTEGER NOT NULL REFERENCES trips(id),
+    made_at TEXT NOT NULL, remaining_km REAL, eta_at TEXT, static_eta_at TEXT
+);
+CREATE TABLE IF NOT EXISTS eta_samples (      -- real trips used to retrain the ETA model
+    id INTEGER PRIMARY KEY, created_at TEXT, features TEXT, target REAL, static_min REAL
+);
+CREATE TABLE IF NOT EXISTS precheck_packets (  -- digital check-in packets
+    id              INTEGER PRIMARY KEY,
+    trip_id         INTEGER REFERENCES trips(id),
+    appointment_id  INTEGER REFERENCES appointments(id),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    status          TEXT NOT NULL,              -- CLEARED | NOTES | BLOCKED
+    trigger         TEXT,                       -- horizon | surge
+    checks          TEXT NOT NULL,              -- JSON list
+    packet          TEXT NOT NULL               -- JSON
+);
+CREATE TABLE IF NOT EXISTS yard_resources (   -- dock doors and parking spots
+    id          TEXT PRIMARY KEY,               -- D01 ... / P-A01 ...
+    kind        TEXT NOT NULL,                  -- DOOR | SPOT
+    zone        TEXT NOT NULL,                  -- WEST | CENTRAL | EAST
+    x REAL NOT NULL, y REAL NOT NULL,           -- metres, yard coordinates
+    capabilities TEXT NOT NULL DEFAULT '',      -- REEFER, FLATBED, CROSS_DOCK, POWER (comma list)
+    status      TEXT NOT NULL DEFAULT 'FREE',   -- FREE | OCCUPIED | OUT_OF_SERVICE
+    visit_id    INTEGER
+);
+CREATE TABLE IF NOT EXISTS yard_visits (      -- a trailer inside the yard, gate-in to departure
+    id              INTEGER PRIMARY KEY,
+    appointment_id  INTEGER REFERENCES appointments(id),
+    event_id        INTEGER,
+    plate TEXT, trailer_number TEXT, carrier_name TEXT,
+    trailer_type    TEXT, load_class TEXT, pallet_count INTEGER,
+    priority        REAL,
+    checked_in_at   TEXT NOT NULL,
+    detention_at    TEXT,                       -- when the carrier starts charging detention
+    due_by          TEXT,
+    status          TEXT NOT NULL,              -- AT_SPOT | AT_DOOR | DEPARTED | UNASSIGNED
+    resource_id     TEXT,
+    door_at TEXT, unload_done_at TEXT, departed_at TEXT,
+    jockey_m        REAL NOT NULL DEFAULT 0,
+    reasons         TEXT NOT NULL DEFAULT '[]', -- JSON: why this door / spot
+    batch_id        TEXT
+);
+CREATE TABLE IF NOT EXISTS yard_moves (
+    id INTEGER PRIMARY KEY, visit_id INTEGER, created_at TEXT NOT NULL,
+    from_id TEXT, to_id TEXT, zone TEXT, distance_m REAL
+);
+CREATE TABLE IF NOT EXISTS driver_messages (  -- SMS / driver-app instructions
+    id              INTEGER PRIMARY KEY,
+    created_at      TEXT NOT NULL,
+    appointment_id  INTEGER REFERENCES appointments(id),
+    visit_id INTEGER, event_id INTEGER,
+    phone           TEXT NOT NULL,
+    language        TEXT NOT NULL,
+    channel         TEXT NOT NULL,              -- sim | twilio
+    kind            TEXT NOT NULL,              -- door | spot | move | inspection | hold | review | denied | done | pre
+    body            TEXT NOT NULL,
+    payload         TEXT NOT NULL,              -- JSON: steps, route, destination (re-render in another language)
+    status          TEXT NOT NULL,              -- QUEUED | SENT | DELIVERED | FAILED
+    provider_id TEXT, error TEXT, sent_at TEXT,
+    acked_at        TEXT,
+    reply           TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_msgs_appt ON driver_messages(appointment_id);
+CREATE INDEX IF NOT EXISTS ix_msgs_phone ON driver_messages(phone);
+CREATE INDEX IF NOT EXISTS ix_visits_status ON yard_visits(status);
+CREATE INDEX IF NOT EXISTS ix_moves_created ON yard_moves(created_at);
+CREATE INDEX IF NOT EXISTS ix_trips_status ON trips(status);
+CREATE INDEX IF NOT EXISTS ix_packets_appt ON precheck_packets(appointment_id);
 CREATE INDEX IF NOT EXISTS ix_events_created ON gate_events(created_at);
 CREATE INDEX IF NOT EXISTS ix_appt_status ON appointments(status, scheduled_at);
 """
 
-JSON_COLS = {"reasons", "damage", "images", "detail"}
+JSON_COLS = {"reasons", "damage", "images", "detail", "conditions", "checks", "packet", "features", "payload"}
 
 
 def utcnow() -> datetime:
@@ -93,7 +186,26 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys = ON")
         if self.path != ":memory:":
             self._conn.execute("PRAGMA journal_mode = WAL")
+        self._migrate()
         self._conn.executescript(SCHEMA)
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created."""
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(carriers)").fetchall()}
+        if cols and "insurance_expiry" not in cols:
+            self._conn.execute("ALTER TABLE carriers ADD COLUMN insurance_expiry TEXT")
+            self._conn.commit()
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(appointments)").fetchall()}
+        for name, ddl in (("driver_phone", "TEXT"), ("driver_language", "TEXT DEFAULT 'en'"), ("driver_token", "TEXT")):
+            if cols and name not in cols:
+                self._conn.execute(f"ALTER TABLE appointments ADD COLUMN {name} {ddl}")
+                self._conn.commit()
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(asns)").fetchall()}
+        for name, ddl in (("trailer_type", "TEXT NOT NULL DEFAULT 'DRY_VAN'"),
+                          ("load_class", "TEXT NOT NULL DEFAULT 'STANDARD'"), ("due_by", "TEXT")):
+            if cols and name not in cols:
+                self._conn.execute(f"ALTER TABLE asns ADD COLUMN {name} {ddl}")
+                self._conn.commit()
 
     @contextmanager
     def tx(self):
@@ -130,7 +242,10 @@ class Database:
     # -- domain helpers -----------------------------------------------------
     def clear_all(self) -> None:
         with self.tx() as c:
-            for t in ("gate_events", "appointments", "asns", "carriers"):
+            c.execute("UPDATE yard_resources SET status='FREE', visit_id=NULL WHERE status='OCCUPIED'")
+            for t in ("driver_messages", "yard_moves", "yard_visits", "precheck_packets", "eta_predictions", "trips", "gate_events",
+                      "appointments", "asns",
+                      "carriers"):
                 c.execute(f"DELETE FROM {t}")
 
     def insert_event(self, ev: dict) -> int:

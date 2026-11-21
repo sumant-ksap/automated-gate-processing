@@ -34,7 +34,9 @@ function renderLane(lane) {
     $("#lanes").appendChild(el);
   }
   const ev = l.event;
-  const imgs = ev ? ev.images : [];
+  const all = ev ? ev.images : [];
+  const main = all.find((i) => i.camera === "left" || i.camera === "side") || all[0];
+  const imgs = main ? [main, ...all.filter((i) => i !== main)] : [];
   const scen = Object.keys(state.scenarios).map((s) => `<option value="${esc(s)}">${esc(s.replace(/_/g, " "))}</option>`).join("");
   el.innerHTML = `
     <div class="lane-head">
@@ -128,7 +130,7 @@ function renderExceptions() {
   $("#kExc").textContent = list.length;
   $("#excList").innerHTML = list.map((ev) => `
     <div class="exc ${esc(ev.decision)}">
-      ${ev.images.length ? `<img src="${img(ev.images[ev.decision === "HOLD" && ev.images[1] ? 1 : 0].annotated)}" data-ev="${ev.id}" alt="">` : "<div></div>"}
+      ${ev.images.length ? `<img src="${img((ev.images.find((i) => i.camera === (ev.decision === "HOLD" ? "rear" : "left")) || ev.images[0]).annotated)}" data-ev="${ev.id}" alt="">` : "<div></div>"}
       <div>
         <div>${badge(ev.decision)} <b>Lane ${ev.lane_id}</b> · ${fmtTime(ev.created_at)} · ${esc(ev.carrier_name || "unknown carrier")}</div>
         <ul class="reasons">${ev.reasons.filter((r) => r.decision !== "GRANTED").map((r) => `<li>${esc(r.message)}</li>`).join("")}</ul>
@@ -244,6 +246,8 @@ async function refreshStats() {
   $("#kAuto").textContent = `${Math.round(s.auto_rate * 100)}%`;
   $("#kMs").textContent = `${s.avg_processing_ms} ms`;
   $("#kPending").textContent = s.pending_appointments;
+  $("#kPre").textContent = s.pre_cleared ?? 0;
+  $("#kInbound").textContent = s.inbound_en_route ?? 0;
   $("#kSim").textContent = s.sim_total ? `${Math.round((100 * s.sim_correct) / s.sim_total)}% (${s.sim_correct}/${s.sim_total})` : "–";
 }
 
@@ -283,6 +287,8 @@ function connect() {
       $("#simToggle").checked = msg.running;
     } else if (msg.type === "reset") {
       location.reload();
+    } else if (window.onInboundMessage) {
+      window.onInboundMessage(msg);
     }
   };
 }

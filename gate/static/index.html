@@ -39,10 +39,15 @@
   <div class="kpi"><div class="v" id="kExc">0</div><div class="l">Open exceptions</div></div>
   <div class="kpi"><div class="v" id="kPending">0</div><div class="l">Scheduled appointments</div></div>
   <div class="kpi"><div class="v" id="kSim">–</div><div class="l">Simulator decision accuracy</div></div>
+  <div class="kpi"><div class="v" id="kInbound">0</div><div class="l">Inbound trucks tracked</div></div>
+  <div class="kpi"><div class="v" id="kPre">0</div><div class="l">Pre-cleared at gate (24h)</div></div>
 </section>
 
 <nav class="tabs">
   <button class="tab active" data-tab="live">Live lanes</button>
+  <button class="tab" data-tab="inbound">Inbound &amp; pre-check <span id="surgeBadge" class="badge warn" hidden>surge</span></button>
+  <button class="tab" data-tab="yard">Yard &amp; docks</button>
+  <button class="tab" data-tab="drivers">Driver messages <span id="helpBadge" class="badge" hidden>help</span></button>
   <button class="tab" data-tab="exceptions">Exceptions <span id="excBadge" class="badge">0</span></button>
   <button class="tab" data-tab="appointments">Appointments &amp; ASNs</button>
 </nav>
@@ -59,6 +64,91 @@
       <thead><tr><th>Time</th><th>Lane</th><th>Decision</th><th>Plate</th><th>Trailer</th><th>USDOT</th>
         <th>Seal</th><th>Carrier</th><th>Destination</th><th>ms</th></tr></thead>
       <tbody id="eventRows"></tbody>
+    </table></div>
+  </section>
+
+  <section id="tab-inbound" class="tabpane">
+    <div class="inbound-bar">
+      <p class="hint">Live GPS telematics + traffic + weather &rarr; AI-predicted arrival windows. Trucks are
+        pre-verified before they reach the gate; arrival surges are detected in advance.</p>
+      <div class="controls">
+        <label class="sim"><span>Inbound fleet simulator</span><input type="checkbox" id="fleetToggle"><span class="switch"></span></label>
+        <button id="convoyBtn" title="Send a group of trucks that will arrive together">Send convoy (surge)</button>
+      </div>
+    </div>
+    <div class="inbound-grid">
+      <div class="card radar-card">
+        <div class="card-title">Approach map <span class="reason" id="facilityName"></span></div>
+        <svg id="radar" viewBox="0 0 520 520" role="img" aria-label="Map of inbound trucks around the facility"></svg>
+        <div class="legend">
+          <span><i class="dot CLEARED"></i>pre-cleared</span><span><i class="dot NOTES"></i>cleared w/ notes</span>
+          <span><i class="dot BLOCKED"></i>blocked</span><span><i class="dot NONE"></i>not yet checked</span>
+          <span><i class="tri"></i>incident</span><span><i class="cell"></i>rain / storm</span>
+        </div>
+      </div>
+      <div class="side-col">
+        <div class="card"><div class="card-title">Arrival surge alerts</div><div id="clusters"></div></div>
+        <div class="card"><div class="card-title">ETA model</div><div id="modelCard" class="reason">loading…</div></div>
+      </div>
+    </div>
+    <h2>Inbound board</h2>
+    <div class="tablewrap"><table class="events">
+      <thead><tr><th>Truck</th><th>Appointment / slot</th><th>Predicted arrival (window)</th><th>vs slot</th>
+        <th>Static ETA</th><th>Distance · speed</th><th>Conditions</th><th>Pre-check</th></tr></thead>
+      <tbody id="inboundRows"></tbody>
+    </table></div>
+  </section>
+
+  <section id="tab-yard" class="tabpane">
+    <div class="inbound-bar">
+      <p class="hint">AI dock &amp; spot allocation: every truck that clears the gate is assigned jointly with the others
+        by load priority, equipment compatibility and yard congestion. Unloading runs <span id="yardScale">10</span>&times; real time.</p>
+      <div class="controls">
+        <select id="batchN"><option>5</option><option selected>8</option><option>10</option></select>
+        <button id="batchBtn" class="primary">Simultaneous check-in</button>
+      </div>
+    </div>
+    <section class="kpis yard-kpis">
+      <div class="kpi"><div class="v" id="yDoors">0/24</div><div class="l">Dock doors busy</div></div>
+      <div class="kpi"><div class="v" id="yCold">0/4</div><div class="l">Cold docks busy</div></div>
+      <div class="kpi"><div class="v" id="yWait">0</div><div class="l">Trailers waiting in yard</div></div>
+      <div class="kpi"><div class="v" id="yPerish">0</div><div class="l">Perishables waiting</div></div>
+    </section>
+    <div class="inbound-grid">
+      <div class="card"><div class="card-title">Yard map</div>
+        <svg id="yardMap" viewBox="0 -40 420 332" role="img" aria-label="Yard map with dock doors and parking spots"></svg>
+        <div class="legend">
+          <span><i class="sq REEFER"></i>cold dock</span><span><i class="sq FLATBED"></i>ground-level (flatbed)</span>
+          <span><i class="sq DRY"></i>dry dock</span><span><i class="sq CROSS_DOCK"></i>cross-dock</span>
+          <span><i class="sq POWER"></i>power spot</span><span><i class="dot BLOCKED"></i>perishable</span>
+          <span><i class="dot NOTES"></i>cross-dock load</span><span><i class="dot NONE"></i>standard</span>
+        </div>
+      </div>
+      <div class="side-col">
+        <div class="card"><div class="card-title">AI plan vs first-come-first-served</div><div id="batchCard" class="reason">
+          Press <b>Simultaneous check-in</b> to send several trucks through the gate at once and compare the AI
+          allocation with what a dispatcher working first-come-first-served would do.</div></div>
+      </div>
+    </div>
+    <h2>Trailers in the yard</h2>
+    <div class="tablewrap"><table class="events">
+      <thead><tr><th>Truck</th><th>Load</th><th>Priority</th><th>Location</th><th>Status</th><th>Detention</th><th>Why here</th></tr></thead>
+      <tbody id="yardRows"></tbody>
+    </table></div>
+  </section>
+
+  <section id="tab-drivers" class="tabpane">
+    <p class="hint">Touchless instructions: every gate and yard decision is sent to the driver's phone in their language
+      (SMS + live map page). Drivers confirm with OK, switch language with EN / ES / HI / PA / RU, or text HELP.</p>
+    <section class="kpis yard-kpis">
+      <div class="kpi"><div class="v" id="mSent">0</div><div class="l">Messages sent (24h)</div></div>
+      <div class="kpi"><div class="v" id="mDelivered">0</div><div class="l">Delivered</div></div>
+      <div class="kpi"><div class="v" id="mAck">0%</div><div class="l">Confirmed by driver</div></div>
+      <div class="kpi"><div class="v" id="mLangs">–</div><div class="l">Languages used</div></div>
+    </section>
+    <div class="tablewrap"><table class="events">
+      <thead><tr><th>Time</th><th>Driver</th><th>Language</th><th>Message</th><th>Status</th><th>Confirmed</th><th>Preview</th></tr></thead>
+      <tbody id="msgRows"></tbody>
     </table></div>
   </section>
 
@@ -82,7 +172,7 @@
       </form>
     </details>
     <div class="filters">
-      <select id="fStatus"><option value="SCHEDULED">Scheduled</option><option value="ARRIVED">Arrived</option><option value="">All</option></select>
+      <select id="fStatus"><option value="SCHEDULED">Scheduled</option><option value="ARRIVED">Arrived</option><option value="NO_SHOW">No-show</option><option value="">All</option></select>
     </div>
     <div class="tablewrap"><table class="events">
       <thead><tr><th>Appointment</th><th>Scheduled</th><th>Carrier</th><th>USDOT</th><th>Plate</th><th>Trailer</th>
@@ -102,5 +192,8 @@
 
 <input type="file" id="uploader" accept="image/*" multiple hidden>
 <script src="app.js"></script>
+<script src="inbound.js"></script>
+<script src="yard.js"></script>
+<script src="drivers.js"></script>
 </body>
 </html>

@@ -38,12 +38,40 @@ class Settings:
 
     # damage detection
     damage_min_area: int = field(default_factory=lambda: _env("GATE_DAMAGE_MIN_AREA", 500))
+    # below this sharpness (variance of Laplacian) a side/rear frame is too poor to judge damage;
+    # calibrate per camera: log the event detail "image_sharpness" values from known-good frames
+    min_sharpness: float = field(default_factory=lambda: _env("GATE_MIN_SHARPNESS", 20.0))
     damage_model: str = field(default_factory=lambda: _env("GATE_DAMAGE_MODEL", ""))  # optional YOLO .onnx
     damage_model_classes: str = field(default_factory=lambda: _env("GATE_DAMAGE_CLASSES", "dent,rust,hole,scratch,broken_seal"))
 
     # simulator
     sim_interval_s: float = field(default_factory=lambda: _env("GATE_SIM_INTERVAL", 6.0))
     sim_autostart: bool = field(default_factory=lambda: _env("GATE_SIM_AUTOSTART", False))
+
+    # predictive arrival & pre-check-in
+    facility_name: str = field(default_factory=lambda: _env("GATE_FACILITY_NAME", "DC-01 Dallas"))
+    facility_lat: float = field(default_factory=lambda: _env("GATE_FACILITY_LAT", 32.7767))
+    facility_lon: float = field(default_factory=lambda: _env("GATE_FACILITY_LON", -96.7970))
+    weather_provider: str = field(default_factory=lambda: _env("GATE_WEATHER", "sim"))     # sim | openmeteo
+    precheck_horizon_min: int = field(default_factory=lambda: _env("GATE_PRECHECK_HORIZON_MIN", 30))
+    surge_window_min: int = field(default_factory=lambda: _env("GATE_SURGE_WINDOW_MIN", 10))
+    surge_threshold: int = field(default_factory=lambda: _env("GATE_SURGE_THRESHOLD", 6))
+    manual_checkin_min: float = field(default_factory=lambda: _env("GATE_MANUAL_CHECKIN_MIN", 4.0))
+    precleared_checkin_min: float = field(default_factory=lambda: _env("GATE_PRECLEARED_CHECKIN_MIN", 0.5))
+    arrive_radius_km: float = field(default_factory=lambda: _env("GATE_ARRIVE_RADIUS_KM", 0.3))
+    eta_history_trips: int = field(default_factory=lambda: _env("GATE_ETA_HISTORY_TRIPS", 500))
+    eta_retrain_every: int = field(default_factory=lambda: _env("GATE_ETA_RETRAIN_EVERY", 5))
+    inbound_tick_s: float = field(default_factory=lambda: _env("GATE_INBOUND_TICK_S", 2.0))
+    fleet_target: int = field(default_factory=lambda: _env("GATE_FLEET_TARGET", 10))
+    fleet_spawn_s: float = field(default_factory=lambda: _env("GATE_FLEET_SPAWN_S", 35.0))
+    fleet_autostart: bool = field(default_factory=lambda: _env("GATE_FLEET_AUTOSTART", False))
+
+    # dock & spot allocation: unloading runs this many times faster than real time (demo speed-up)
+    yard_time_scale: float = field(default_factory=lambda: _env("GATE_YARD_TIME_SCALE", 10.0))
+
+    # driver communication
+    sms_provider: str = field(default_factory=lambda: _env("GATE_SMS_PROVIDER", "sim"))       # sim | twilio
+    public_url: str = field(default_factory=lambda: _env("GATE_PUBLIC_URL", "http://localhost:8000"))
 
     @property
     def db_path(self) -> Path:

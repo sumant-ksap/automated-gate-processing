@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import random
 import threading
-from datetime import timedelta
+from datetime import date, timedelta
 
 from ..db import Database, iso, utcnow
 from ..seed import create_appointment, random_plate, random_seal, random_trailer, STATES
@@ -56,7 +56,10 @@ def _pick_appointment(db: Database, rng: random.Random) -> dict:
     rows = db.query("""SELECT a.*, c.name AS carrier_name, c.dot_number, s.seal_number
                        FROM appointments a JOIN carriers c ON c.id = a.carrier_id
                        LEFT JOIN asns s ON s.id = a.asn_id
-                       WHERE a.status = 'SCHEDULED' AND a.scheduled_at BETWEEN ? AND ?""", (lo, hi))
+                       WHERE a.status = 'SCHEDULED' AND a.scheduled_at BETWEEN ? AND ?
+                         AND a.id NOT IN (SELECT appointment_id FROM trips
+                                          WHERE status = 'EN_ROUTE' AND appointment_id IS NOT NULL)
+                         AND c.insurance_expiry >= date('now')""", (lo, hi))
     rows = [r for r in rows if r["appt_ref"] not in _reserved]
     if len(rows) < 6:
         for _ in range(6):
@@ -68,11 +71,11 @@ def _pick_appointment(db: Database, rng: random.Random) -> dict:
 def _random_damage(rng: random.Random) -> list[Damage]:
     out = []
     for _ in range(rng.choice([1, 1, 2])):
-        view = rng.choice(["side", "side", "rear"])
-        kind = rng.choice(["dent", "rust", "hole"] + (["scratch"] if view == "side" else []))
+        view = rng.choice(["left", "right", "rear"])
+        kind = rng.choice(["dent", "rust", "hole"] + (["scratch"] if view != "rear" else []))
         out.append(Damage(kind, view, rng.uniform(0.05, 0.95), rng.uniform(0.1, 0.9), rng.uniform(0.9, 1.3)))
     # keep side damages apart from each other
-    side = [d for d in out if d.view == "side"]
+    side = [d for d in out if d.view in ("left", "right") and d.view == out[0].view]
     if len(side) == 2 and abs(side[0].rx - side[1].rx) < 0.3:
         side[1].rx = (side[0].rx + 0.5) % 1.0
     return out
@@ -107,3 +110,26 @@ def build_scenario(db: Database, rng: random.Random, name: str | None = None) ->
     elif name == "unreadable":
         spec.quality = "poor"
     return name, spec
+
+
+def build_for_appointment(db: Database, rng: random.Random, appointment_id: int) -> tuple[str, str, TruckSpec]:
+    """A truck that drove in from the inbound fleet: mostly healthy, sometimes damaged / bad seal.
+    Returns (scenario, expected_decision, spec)."""
+    appt = db.one("""SELECT a.*, c.name AS carrier_name, c.dot_number, c.insurance_expiry, s.seal_number
+                     FROM appointments a JOIN carriers c ON c.id = a.carrier_id
+                     LEFT JOIN asns s ON s.id = a.asn_id WHERE a.id = ?""", (appointment_id,))
+    with _reserve_lock:
+        _reserved.add(appt["appt_ref"])
+    spec = TruckSpec(appt["carrier_name"], appt["dot_number"], appt["tractor_plate"], rng.choice(STATES),
+                     appt["trailer_number"], appt["seal_number"], cab_color=rng.choice(CAB_COLORS),
+                     trailer_color=rng.choice(TRAILER_COLORS))
+    if appt["insurance_expiry"] and appt["insurance_expiry"] < date.today().isoformat():
+        return "insurance_lapsed", "DENIED", spec
+    r = rng.random()
+    if r < 0.12:
+        spec.damages = _random_damage(rng)
+        return "damaged", "INSPECTION", spec
+    if r < 0.17:
+        spec.seal_state = "broken"
+        return "broken_seal", "HOLD", spec
+    return "healthy", "GRANTED", spec

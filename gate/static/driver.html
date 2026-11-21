@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f141a">
+<title>Yard Instructions</title>
+<style>
+  :root { --bg: #0f141a; --panel: #18202a; --line: #2c3846; --text: #e6edf3; --muted: #8b9bb0; --accent: #4ea1ff;
+          --ok: #2ea043; --warn: #d29922; --bad: #f85149; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f6f9; --panel: #ffffff; --line: #d8dee6; --text: #18202a; --muted: #5b6878; --accent: #0969da; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Devanagari", "Noto Sans Gurmukhi", sans-serif; }
+  header { padding: 14px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+           display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  header > div { min-width: 0; }
+  header b { font-size: 18px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  header select { flex-shrink: 0; max-width: 42%; }
+  select, button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  main { padding: 14px 16px 40px; max-width: 560px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; overflow-wrap: anywhere; }
+  .kind { font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); }
+  .kind.hold, .kind.denied, .kind.pre_blocked { color: var(--bad); } .kind.review, .kind.inspection { color: var(--warn); }
+  .kind.done, .kind.pre { color: var(--ok); }
+  .headline { font-size: 22px; font-weight: 700; margin: 6px 0 8px; }
+  ol { padding-left: 22px; margin: 8px 0; } li { margin: 6px 0; }
+  .note { color: var(--muted); font-size: 14px; }
+  .confirm { width: 100%; background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 700; padding: 14px; font-size: 18px; }
+  .confirm[disabled] { background: transparent; color: var(--ok); }
+  svg { width: 100%; display: block; }
+  .hist { font-size: 14px; color: var(--muted); white-space: pre-line; border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+  .err { color: var(--bad); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .pulse { animation: pulse 1.2s infinite; }
+</style>
+</head>
+<body>
+<header>
+  <div><b id="plate">…</b><div class="sub" id="carrier"></div></div>
+  <select id="lang" aria-label="Language"></select>
+</header>
+<main>
+  <section class="card" id="current"><div class="note">Loading…</div></section>
+  <section class="card"><svg id="map" viewBox="0 -40 420 330" role="img" aria-label="Yard map with your route"></svg></section>
+  <section class="card"><details><summary class="note">Earlier messages</summary><div id="history"></div></details></section>
+</main>
+<script>
+"use strict";
+const token = new URLSearchParams(location.search).get("t") || "";
+const $ = (s) => document.querySelector(s);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const KIND = { door: "Go to door", spot: "Park and wait", move: "Move to door", inspection: "Inspection", hold: "Security hold",
+               review: "Guard check", denied: "Entry refused", done: "Finished", pre: "Pre-check", pre_blocked: "Action needed" };
+let state = null;
+
+async function api(path, opts) {
+  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+}
+
+function bodyLines(body) {   // the SMS text without the link line
+  return body.split("\n").filter((l) => !/^[^:]+: https?:\/\//.test(l));
+}
+
+function renderCurrent(m) {
+  if (!m) { $("#current").innerHTML = `<div class="note">No instructions yet. You will receive them at the gate.</div>`; return; }
+  const lines = bodyLines(m.body);
+  const steps = lines.filter((l) => /^\d+\.\s/.test(l)).map((l) => l.replace(/^\d+\.\s/, ""));
+  const text = lines.filter((l) => !/^\d+\.\s/.test(l));
+  const head = (m.payload && m.payload.headline) || text[0] || "";
+  const needsAck = ["door", "spot", "move", "inspection", "hold", "review"].includes(m.kind);
+  $("#current").innerHTML = `
+    <div class="kind ${esc(m.kind)}">${esc(KIND[m.kind] || m.kind)} · ${new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+    <div class="headline">${esc(head)}</div>
+    ${text.filter((l) => l !== head).map((l) => `<div class="note">${esc(l)}</div>`).join("")}
+    ${steps.length ? `<ol>${steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>` : ""}
+    ${needsAck ? `<button class="confirm" id="ack" ${m.acked_at ? "disabled" : ""}>${m.acked_at ? "✓ OK" : "OK ✓"}</button>` : ""}`;
+  const b = $("#ack");
+  if (b && !m.acked_at) b.onclick = async () => { b.disabled = true; await api(`/api/driver/${encodeURIComponent(token)}/ack`, { method: "POST" }); load(); };
+}
+
+function renderMap(d) {
+  const m = d.current, p = m && m.payload;
+  let h = `<rect x="0" y="-36" width="420" height="30" fill="var(--line)"/>`;
+  for (const r of d.yard.resources) {
+    const isDest = p && p.dest && p.dest.id === r.id;
+    const col = isDest ? "var(--ok)" : "var(--muted)";
+    h += r.kind === "DOOR"
+      ? `<rect x="${r.x - 6}" y="-6" width="12" height="20" rx="2" fill="${isDest ? col : "none"}" stroke="${col}" ${isDest ? 'class="pulse"' : ""}/>`
+      : `<rect x="${r.x - 6}" y="${r.y - 11}" width="12" height="22" rx="2" fill="${isDest ? col : "none"}" stroke="${col}" stroke-opacity="${isDest ? 1 : .35}" ${isDest ? 'class="pulse"' : ""}/>`;
+  }
+  const ib = d.yard.inspection_bay;
+  h += `<rect x="${ib.x - 20}" y="${ib.y - 12}" width="40" height="24" rx="3" fill="none" stroke="var(--warn)" stroke-dasharray="3 2"/>`;
+  if (p && p.route && p.route.length) {
+    h += `<polyline points="${p.route.map((q) => q.join(",")).join(" ")}" fill="none" stroke="var(--accent)" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const s = p.route[0];
+    h += `<circle cx="${s[0]}" cy="${s[1]}" r="7" fill="var(--accent)"/>`;
+  }
+  if (p && p.dest) h += `<text x="${p.dest.x}" y="${p.dest.kind === "DOOR" ? 32 : p.dest.y + 26}" text-anchor="middle" font-size="13" font-weight="700" fill="var(--ok)">${esc(p.dest.id)}</text>`;
+  const g = d.yard.gate;
+  h += `<rect x="${g.x - 20}" y="${g.y - 7}" width="40" height="14" rx="3" fill="var(--text)"/>
+        <text x="${g.x}" y="${g.y + 4}" text-anchor="middle" font-size="9" font-weight="700" fill="var(--bg)">GATE</text>`;
+  $("#map").innerHTML = h;
+}
+
+async function load() {
+  try {
+    const d = await api(`/api/driver/${encodeURIComponent(token)}`);
+    state = d;
+    document.documentElement.lang = d.language;
+    $("#plate").textContent = `${d.appointment.plate} · ${d.appointment.ref}`;
+    $("#carrier").textContent = d.appointment.carrier;
+    const sel = $("#lang");
+    if (!sel.options.length) {
+      sel.innerHTML = Object.entries(d.languages).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+      sel.onchange = async () => { await api(`/api/driver/${encodeURIComponent(token)}/language`, { method: "POST", body: JSON.stringify({ language: sel.value }) }); load(); };
+    }
+    sel.value = d.language;
+    renderCurrent(d.current);
+    renderMap(d);
+    $("#history").innerHTML = d.history.map((m) => `<div class="hist">${esc(bodyLines(m.body).join("\n"))}</div>`).join("") || `<div class="note">—</div>`;
+  } catch (e) {
+    $("#current").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>

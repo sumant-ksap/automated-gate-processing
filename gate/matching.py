@@ -14,7 +14,7 @@ result plus damage findings into one gate decision:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 from .config import Settings
 from .db import Database, parse_iso
@@ -67,7 +67,7 @@ def _usable(r: Reading | None, min_conf: float) -> Reading | None:
 
 
 def decide(db: Database, settings: Settings, readings: dict[str, Reading | None],
-           damage: list[DamageFinding], now: datetime) -> MatchResult:
+           damage: list[DamageFinding], now: datetime, uninspected: list[str] | tuple = ()) -> MatchResult:
     reasons: list[Reason] = []
     min_conf = settings.min_ocr_confidence
     plate = _usable(readings.get("plate"), min_conf)
@@ -95,13 +95,17 @@ def decide(db: Database, settings: Settings, readings: dict[str, Reading | None]
             reasons.append(Reason("CARRIER_SUSPENDED", f"{carrier['name']} (USDOT {dot.value}) is "
                                   f"{carrier['status']}", "DENIED"))
             return _finish(reasons, None, None, carrier, [])
+        elif _insurance_lapsed(carrier):
+            reasons.append(Reason("INSURANCE_EXPIRED", f"{carrier['name']} insurance expired "
+                                  f"{carrier['insurance_expiry']}", "DENIED"))
+            return _finish(reasons, None, None, carrier, [])
     else:
         reasons.append(Reason("NO_DOT", "USDOT number not read", "GRANTED"))
 
     # -- score every open appointment ------------------------------------------------
     candidates = db.query("""SELECT a.*, c.dot_number, c.name AS carrier_name
                              FROM appointments a JOIN carriers c ON c.id = a.carrier_id
-                             WHERE a.status = 'SCHEDULED'""")
+                             WHERE a.status IN ('SCHEDULED', 'NO_SHOW')""")
     scored = []
     for a in candidates:
         s = {"trailer": 0, "plate": 0, "dot": 0}
@@ -149,8 +153,14 @@ def decide(db: Database, settings: Settings, readings: dict[str, Reading | None]
             return _finish(reasons, None, None, carrier, score_log)
 
     if best is None:
-        ids = ", ".join(f"{k}={r.value}" for k, r in (("plate", plate), ("trailer", trailer), ("dot", dot)) if r)
-        reasons.append(Reason("NO_APPOINTMENT", f"No scheduled appointment matches ({ids})", "DENIED"))
+        read = [(k, r) for k, r in (("plate", plate), ("trailer", trailer), ("dot", dot)) if r]
+        ids = ", ".join(f"{k}={r.value}" for k, r in read)
+        if len(read) < 2:
+            # one (possibly misread) identifier is not enough evidence to turn a truck away
+            reasons.append(Reason("PARTIAL_READ", f"Only {ids} could be read and it matches no appointment - "
+                                  "guard must verify paperwork", "MANUAL_REVIEW"))
+        else:
+            reasons.append(Reason("NO_APPOINTMENT", f"No scheduled appointment matches ({ids})", "DENIED"))
         return _finish(reasons, None, None, carrier, score_log)
 
     s, appt = best
@@ -165,16 +175,32 @@ def decide(db: Database, settings: Settings, readings: dict[str, Reading | None]
                               f"'{appt['tractor_plate']}' (look-alike characters)", "GRANTED"))
     if carrier is None:
         carrier = db.one("SELECT * FROM carriers WHERE id = ?", (appt["carrier_id"],))
+        if carrier and _insurance_lapsed(carrier):
+            reasons.append(Reason("INSURANCE_EXPIRED", f"{carrier['name']} insurance expired "
+                                  f"{carrier['insurance_expiry']}", "DENIED"))
     elif carrier["id"] != appt["carrier_id"]:
         reasons.append(Reason("IDENTITY_CONFLICT", f"USDOT {dot.value} belongs to {carrier['name']}, "
                               f"appointment is for {appt['carrier_name']}", "MANUAL_REVIEW"))
     asn = db.one("SELECT * FROM asns WHERE id = ?", (appt["asn_id"],)) if appt["asn_id"] else None
 
+    # -- pre-check-in packet (prepared while the truck was en route) -------------
+    packet = db.one("""SELECT * FROM precheck_packets WHERE appointment_id = ?
+                       ORDER BY id DESC LIMIT 1""", (appt["id"],))
+    forecast = packet is not None and packet["status"] != "BLOCKED"
+    if forecast:
+        reasons.append(Reason("PRE_CLEARED", f"Pre-cleared before arrival (packet #{packet['id']}, "
+                              f"{packet['trigger']}) - credentials already verified", "GRANTED"))
+
     # -- appointment window -----------------------------------------------------
     sched = parse_iso(appt["scheduled_at"])
     delta_min = (now - sched).total_seconds() / 60       # +late / -early
     destination = f"Dock door {appt['dock_door']}"
-    if delta_min < -settings.early_minutes:
+    if forecast and abs(delta_min) > settings.on_time_minutes:
+        word = "early" if delta_min < 0 else "late"
+        reasons.append(Reason("FORECAST_OFF_SCHEDULE", f"{abs(delta_min):.0f} min {word}, as predicted en route - "
+                              "dock re-sequenced, routed via staging", "GRANTED"))
+        destination = f"Staging lot (then dock door {appt['dock_door']})"
+    elif delta_min < -settings.early_minutes:
         reasons.append(Reason("TOO_EARLY", f"Arrived {-delta_min:.0f} min before appointment "
                               f"(max {settings.early_minutes})", "MANUAL_REVIEW"))
     elif delta_min > settings.late_minutes:
@@ -210,8 +236,16 @@ def decide(db: Database, settings: Settings, readings: dict[str, Reading | None]
                               "INSPECTION"))
     elif damage:
         reasons.append(Reason("MINOR_DAMAGE", f"{len(damage)} minor surface finding(s) logged", "GRANTED"))
+    if uninspected:
+        reasons.append(Reason("NOT_INSPECTED", f"Trailer could not be inspected ({', '.join(uninspected)} camera "
+                              "image too blurred or dark) - routed to inspection bay", "INSPECTION"))
 
     return _finish(reasons, appt, asn, carrier, score_log, destination)
+
+
+def _insurance_lapsed(carrier: dict) -> bool:
+    exp = carrier.get("insurance_expiry")
+    return bool(exp) and exp < date.today().isoformat()
 
 
 def _finish(reasons, appt, asn, carrier, scores, destination: str = "") -> MatchResult:

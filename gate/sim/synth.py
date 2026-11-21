@@ -1,9 +1,10 @@
 """Synthetic camera frames of trucks arriving at the gate.
 
-Each arriving truck is captured by two cameras per lane:
-  * side camera - tractor cab (license plate, USDOT number) and trailer side
-                  panel (trailer number, side damage)
-  * rear camera - trailer doors (trailer number, bolt seal, door damage)
+Each arriving truck is captured by four cameras per lane:
+  * front camera       - license plate recognition (LPR), head-on
+  * left / right side  - tractor doors (USDOT number) and both trailer side
+                         panels (trailer number, damage on either side)
+  * rear camera        - trailer doors (trailer number, bolt seal, door damage)
 
 The frames are rendered with OpenCV and then degraded (noise, blur, lighting)
 so the OCR / damage pipeline has to do real work. This lets the whole system
@@ -28,7 +29,7 @@ DAMAGE_KINDS = ("dent", "rust", "hole", "scratch")
 @dataclass
 class Damage:
     kind: str                 # dent | rust | hole | scratch
-    view: str = "side"        # side | rear
+    view: str = "left"        # left | right | rear  ("side" = left, older name)
     # relative position inside the panel (0..1)
     rx: float = 0.5
     ry: float = 0.5
@@ -146,7 +147,9 @@ def _draw_ribs(img, panel, color, step=56):
 # --------------------------------------------------------------------------
 # frames
 # --------------------------------------------------------------------------
-def render_side(spec: TruckSpec, rng: random.Random) -> np.ndarray:
+def render_side(spec: TruckSpec, rng: random.Random, side: str = "left") -> np.ndarray:
+    """Side camera. 'left' = driver's side (cab on the left of the image); 'right' = the other side of the
+    truck: the same body seen mirrored (cab on the right), but with readable, un-mirrored lettering."""
     img = _background(rng)
     tc = spec.trailer_color
     # trailer box
@@ -159,12 +162,6 @@ def render_side(spec: TruckSpec, rng: random.Random) -> np.ndarray:
     for wx in (980, 1080, 1150):
         cv2.circle(img, (wx, 560), 42, (25, 25, 25), -1)
         cv2.circle(img, (wx, 560), 18, (140, 140, 140), -1)
-    # carrier name on trailer
-    name = spec.carrier_name.upper()
-    scale = min(2.2, 760 / max(1, _text_size(name, 1.0, 4)[0]))
-    _centered_text(img, name, 820, 330, scale, (120, 60, 30), 4)
-    # trailer number (upper right of the side panel, as painted on real trailers)
-    _text(img, spec.trailer_number, (870, 180), 1.15, (20, 20, 20), 2)
 
     # tractor
     cc = spec.cab_color
@@ -177,25 +174,72 @@ def render_side(spec: TruckSpec, rng: random.Random) -> np.ndarray:
     door = (140, 305, 325, 455)
     cv2.rectangle(img, door[:2], door[2:], tuple(min(255, int(c) + 25) for c in cc), -1)
     cv2.rectangle(img, door[:2], door[2:], (20, 20, 20), 2)
-    cv2.rectangle(img, (150, 370), (318, 430), (245, 245, 245), -1)
-    _centered_text(img, "USDOT", 234, 393, 0.62, (10, 10, 10), 2)
-    _centered_text(img, spec.dot_number, 234, 423, 0.8, (10, 10, 10), 2)
+    cv2.rectangle(img, (150, 370), (318, 430), (245, 245, 245), -1)      # USDOT placard (text added below)
     # wheels
     for wx in (185, 335):
         cv2.circle(img, (wx, 560), 45, (25, 25, 25), -1)
         cv2.circle(img, (wx, 560), 20, (150, 150, 150), -1)
-    # front bumper + license plate
-    cv2.rectangle(img, (40, 455), (150, 520), (160, 160, 165), -1)
-    plate = (22, 432, 200, 512)
+    # front bumper (the license plate faces forward - read by the front camera)
+    cv2.rectangle(img, (55, 470), (110, 520), (160, 160, 165), -1)
+
+    views = ("left", "side") if side == "left" else ("right",)       # "side" = older name for the left side
+    for d in spec.damages:
+        if d.view in views:
+            _draw_damage(img, d, (panel[0] + 10, 360, panel[2] - 10, panel[3] - 5), tc, rng)
+
+    mirror = side == "right"
+    if mirror:
+        img = cv2.flip(img, 1)
+    mx = (lambda x: W - x) if mirror else (lambda x: x)
+    # lettering is painted readable on both sides of a real truck, so it is never mirrored
+    name = spec.carrier_name.upper()
+    scale = min(2.2, 760 / max(1, _text_size(name, 1.0, 4)[0]))
+    _centered_text(img, name, mx(820), 330, scale, (120, 60, 30), 4)
+    tw, _ = _text_size(spec.trailer_number, 1.15, 2)
+    # trailer number near the rear top corner of the panel (rear is on the right on the left side, and vice versa)
+    _text(img, spec.trailer_number, (870 if not mirror else W - 870 - tw, 180), 1.15, (20, 20, 20), 2)
+    _centered_text(img, "USDOT", mx(234), 393, 0.62, (10, 10, 10), 2)
+    _centered_text(img, spec.dot_number, mx(234), 423, 0.8, (10, 10, 10), 2)
+    return img
+
+
+def render_front(spec: TruckSpec, rng: random.Random) -> np.ndarray:
+    """Front (LPR) camera: tractor head-on, license plate on the bumper."""
+    img = _background(rng)
+    cc = spec.cab_color
+    dark = tuple(max(0, int(c) - 45) for c in cc)
+    # trailer box visible behind / above the cab
+    cv2.rectangle(img, (400, 60), (880, 180), spec.trailer_color, -1)
+    cv2.rectangle(img, (400, 60), (880, 180), (90, 90, 95), 3)
+    # cab body
+    cab = np.array([(450, 560), (450, 190), (480, 140), (800, 140), (830, 190), (830, 560)], np.int32)
+    cv2.fillPoly(img, [cab], cc, cv2.LINE_AA)
+    cv2.polylines(img, [cab], True, (20, 20, 20), 2, cv2.LINE_AA)
+    # windshield (split) + mirrors
+    cv2.rectangle(img, (485, 165), (635, 290), (110, 80, 60), -1)
+    cv2.rectangle(img, (645, 165), (795, 290), (110, 80, 60), -1)
+    for x0, x1 in ((395, 440), (840, 885)):
+        cv2.rectangle(img, (x0, 180), (x1, 270), (40, 40, 45), -1)
+    # grille with horizontal slats
+    cv2.rectangle(img, (545, 315), (735, 455), (150, 150, 155), -1)
+    for y in range(325, 450, 14):
+        cv2.line(img, (553, y), (727, y), (90, 90, 95), 4)
+    # headlights
+    for x0 in (470, 755):
+        cv2.rectangle(img, (x0, 330), (x0 + 55, 375), (215, 235, 245), -1)
+        cv2.rectangle(img, (x0, 330), (x0 + 55, 375), dark, 3)
+    # bumper + plate
+    cv2.rectangle(img, (430, 470), (850, 545), (170, 170, 175), -1)
+    cv2.rectangle(img, (430, 470), (850, 545), (60, 60, 65), 2)
+    plate = (550, 462, 730, 552)
     cv2.rectangle(img, plate[:2], plate[2:], (245, 245, 240), -1)
     cv2.rectangle(img, plate[:2], plate[2:], (30, 30, 30), 3)
-    _centered_text(img, spec.plate_state.upper(), 111, 452, 0.45, (120, 40, 20), 1, FONT_BOLD)
-    pscale = min(1.1, 155 / max(1, _text_size(spec.plate, 1.0, 3)[0]))
-    _centered_text(img, spec.plate, 111, 496, pscale, (15, 15, 15), 3)
-
-    for d in spec.damages:
-        if d.view == "side":
-            _draw_damage(img, d, (panel[0] + 10, 360, panel[2] - 10, panel[3] - 5), tc, rng)
+    _centered_text(img, spec.plate_state.upper(), 640, 484, 0.5, (120, 40, 20), 1, FONT_BOLD)
+    pscale = min(1.15, 160 / max(1, _text_size(spec.plate, 1.0, 3)[0]))
+    _centered_text(img, spec.plate, 640, 534, pscale, (15, 15, 15), 3)
+    # wheels
+    for x0 in (455, 765):
+        cv2.rectangle(img, (x0, 545), (x0 + 60, 640), (25, 25, 25), -1)
     return img
 
 
@@ -240,7 +284,7 @@ def render_rear(spec: TruckSpec, rng: random.Random) -> np.ndarray:
     for d in spec.damages:
         if d.view == "rear":
             # clear spans between locking bars (left door / right door)
-            span = (420, 200, 540, 520) if d.rx < 0.5 else (744, 200, 864, 520)
+            span = (420, 360, 540, 540) if d.rx < 0.5 else (744, 360, 864, 540)   # below the handles
             _draw_damage(img, Damage(d.kind, "rear", 0.5, d.ry, min(d.size, 0.8)),
                          (span[0] - 60, span[1], span[2] + 60, span[3]), tc, rng)
     return img
@@ -270,6 +314,8 @@ def _degrade(img: np.ndarray, rng: random.Random, quality: str) -> np.ndarray:
 def render_truck(spec: TruckSpec, seed: int | None = None) -> dict[str, np.ndarray]:
     rng = random.Random(seed)
     return {
-        "side": _degrade(render_side(spec, rng), rng, spec.quality),
+        "front": _degrade(render_front(spec, rng), rng, spec.quality),
+        "left": _degrade(render_side(spec, rng, "left"), rng, spec.quality),
+        "right": _degrade(render_side(spec, rng, "right"), rng, spec.quality),
         "rear": _degrade(render_rear(spec, rng), rng, spec.quality),
     }
