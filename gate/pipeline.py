@@ -19,9 +19,15 @@ from .events import EventBus
 from .matching import decide
 from .vision.annotate import annotate
 from .vision.damage import build_detector
+from .vision.identifiers import Reading, clean
 from .vision.reader import extract_identifiers
 
 log = logging.getLogger(__name__)
+
+
+def image_sharpness(img: np.ndarray) -> float:
+    """Variance of the Laplacian: low for blurred, dark or dirty-lens frames."""
+    return float(cv2.Laplacian(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var())
 
 
 class GatePipeline:
@@ -31,6 +37,8 @@ class GatePipeline:
         self.controller = controller
         self.bus = bus
         self.detector = build_detector(settings)
+        self.allocator = None            # set by the app: gate.yard.allocator.YardAllocator
+        self.notifier = None             # set by the app: gate.comms.notifier.Notifier
         settings.ensure_dirs()
 
     def process(self, lane_id: int, frames: list[np.ndarray], camera_names: list[str] | None = None,
@@ -41,10 +49,25 @@ class GatePipeline:
         meta = meta or {}
 
         readings, text_boxes, plate_regions = extract_identifiers(frames)
-        damage = []
+        if readings.get("dot") is None:
+            readings["dot"] = self._dot_from_registry(text_boxes)
+        damage, uninspected, quality = [], [], {}
         for fi, img in enumerate(frames):
+            if camera_names[fi].lower() == "front":      # LPR camera sees the cab, not the trailer
+                continue
+            sharpness = image_sharpness(img)
+            quality[camera_names[fi]] = round(sharpness, 1)
+            if sharpness < self.settings.min_sharpness:
+                uninspected.append(camera_names[fi])     # too blurred / dark to judge damage reliably
+                continue
             damage.extend(self.detector.detect(img, text_boxes, fi))
-        result = decide(self.db, self.settings, readings, damage, now)
+        result = decide(self.db, self.settings, readings, damage, now, uninspected)
+        yard = None
+        if self.allocator is not None and result.decision == "GRANTED" and result.appointment:
+            placed = self.allocator.check_in([result.appointment["id"]], now)
+            if placed:
+                yard = placed[0]
+                result.destination = yard["destination"]
 
         # images: raw + annotated, per camera
         stem = f"{now:%Y%m%d_%H%M%S}_L{lane_id}_{uuid.uuid4().hex[:6]}"
@@ -85,12 +108,21 @@ class GatePipeline:
                 "plate_regions": plate_regions,
                 "match_scores": result.scores,
                 "detector": self.detector.name,
+                "image_sharpness": quality,
+                "yard": yard,
                 "appointment_ref": result.appointment["appt_ref"] if result.appointment else None,
                 **meta,
             },
         }
         event_id = self.db.insert_event(event)
         event["id"] = event_id
+        if yard:
+            self.allocator.link_event(yard["visit_id"], event_id)
+        if self.notifier is not None and result.appointment:
+            try:
+                self.notifier.on_gate_event(event, result.appointment, yard)
+            except Exception:
+                log.exception("driver notification failed for event %s", event_id)
 
         if result.opens_gate and result.appointment:
             self._mark_arrived(result.appointment["id"], result.asn, result.decision, now)
@@ -103,6 +135,17 @@ class GatePipeline:
         if self.bus:
             self.bus.publish({"type": "gate_event", "event": event})
         return event
+
+    def _dot_from_registry(self, text_boxes) -> Reading | None:
+        """USDOT label unreadable (worn, dirty, low contrast)? Accept a bare 5-8 digit number read on the
+        truck only if it is the USDOT number of a registered carrier - a random number almost never is."""
+        for b in sorted(text_boxes, key=lambda b: -b.confidence):
+            digits = clean(b.text)
+            if 5 <= len(digits) <= 8 and digits.isdigit() and b.confidence >= 0.8:
+                if self.db.one("SELECT 1 FROM carriers WHERE dot_number = ?", (digits,)):
+                    return Reading(digits, b.confidence * 0.9, b.text, True, b.box, b.frame,
+                                   ["USDOT label not read - number matched a registered carrier"])
+        return None
 
     def _mark_arrived(self, appt_id: int, asn: dict | None, decision: str, now: datetime) -> None:
         self.db.execute("UPDATE appointments SET status='ARRIVED', arrived_at=? WHERE id=?", (iso(now), appt_id))
@@ -118,13 +161,25 @@ class GatePipeline:
         now = utcnow()
         self.db.execute("""UPDATE gate_events SET override_decision=?, override_by=?, override_note=?,
                            override_at=? WHERE id=?""", (decision, by, note, iso(now), event_id))
+        placed = None
         if decision in ("GRANTED", "INSPECTION"):
+            if decision == "GRANTED" and ev["appointment_id"] and self.allocator is not None:
+                placed = self.allocator.check_in([ev["appointment_id"]], now)
+                if placed:
+                    self.allocator.link_event(placed[0]["visit_id"], event_id)
+                    self.db.execute("UPDATE gate_events SET destination=? WHERE id=?",
+                                    (placed[0]["destination"], event_id))
             if ev["appointment_id"]:
                 asn = self.db.one("SELECT * FROM asns WHERE id=?", (ev["asn_id"],)) if ev["asn_id"] else None
                 self._mark_arrived(ev["appointment_id"], asn, decision, now)
             self.controller.open(ev["lane_id"])
             self.db.execute("UPDATE gate_events SET gate_opened=1 WHERE id=?", (event_id,))
         ev = self.db.get_event(event_id)
+        if self.notifier is not None and ev["appointment_id"]:
+            try:
+                self.notifier.on_gate_event(ev, {"id": ev["appointment_id"]}, placed[0] if placed else None)
+            except Exception:
+                log.exception("driver notification failed for override %s", event_id)
         if self.bus:
             self.bus.publish({"type": "gate_event_updated", "event": ev})
         return ev

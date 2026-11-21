@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import random
 import threading
-from datetime import timedelta
+from datetime import date, timedelta
 
 from ..db import Database, iso, utcnow
 from ..seed import create_appointment, random_plate, random_seal, random_trailer, STATES
@@ -56,7 +56,10 @@ def _pick_appointment(db: Database, rng: random.Random) -> dict:
     rows = db.query("""SELECT a.*, c.name AS carrier_name, c.dot_number, s.seal_number
                        FROM appointments a JOIN carriers c ON c.id = a.carrier_id
                        LEFT JOIN asns s ON s.id = a.asn_id
-                       WHERE a.status = 'SCHEDULED' AND a.scheduled_at BETWEEN ? AND ?""", (lo, hi))
+                       WHERE a.status = 'SCHEDULED' AND a.scheduled_at BETWEEN ? AND ?
+                         AND a.id NOT IN (SELECT appointment_id FROM trips
+                                          WHERE status = 'EN_ROUTE' AND appointment_id IS NOT NULL)
+                         AND c.insurance_expiry >= date('now')""", (lo, hi))
     rows = [r for r in rows if r["appt_ref"] not in _reserved]
     if len(rows) < 6:
         for _ in range(6):
@@ -107,3 +110,26 @@ def build_scenario(db: Database, rng: random.Random, name: str | None = None) ->
     elif name == "unreadable":
         spec.quality = "poor"
     return name, spec
+
+
+def build_for_appointment(db: Database, rng: random.Random, appointment_id: int) -> tuple[str, str, TruckSpec]:
+    """A truck that drove in from the inbound fleet: mostly healthy, sometimes damaged / bad seal.
+    Returns (scenario, expected_decision, spec)."""
+    appt = db.one("""SELECT a.*, c.name AS carrier_name, c.dot_number, c.insurance_expiry, s.seal_number
+                     FROM appointments a JOIN carriers c ON c.id = a.carrier_id
+                     LEFT JOIN asns s ON s.id = a.asn_id WHERE a.id = ?""", (appointment_id,))
+    with _reserve_lock:
+        _reserved.add(appt["appt_ref"])
+    spec = TruckSpec(appt["carrier_name"], appt["dot_number"], appt["tractor_plate"], rng.choice(STATES),
+                     appt["trailer_number"], appt["seal_number"], cab_color=rng.choice(CAB_COLORS),
+                     trailer_color=rng.choice(TRAILER_COLORS))
+    if appt["insurance_expiry"] and appt["insurance_expiry"] < date.today().isoformat():
+        return "insurance_lapsed", "DENIED", spec
+    r = rng.random()
+    if r < 0.12:
+        spec.damages = _random_damage(rng)
+        return "damaged", "INSPECTION", spec
+    if r < 0.17:
+        spec.seal_state = "broken"
+        return "broken_seal", "HOLD", spec
+    return "healthy", "GRANTED", spec

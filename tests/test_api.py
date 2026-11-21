@@ -57,7 +57,12 @@ def test_create_appointment_then_truck_is_granted(client):
     files = [("files", (f"{k}.jpg", cv2.imencode(".jpg", v)[1].tobytes(), "image/jpeg")) for k, v in frames.items()]
     ev = client.post("/api/lanes/1/process", files=files).json()
     assert ev["decision"] == "GRANTED", ev["reasons"]
-    assert "D07" in ev["destination"]
+    # the yard engine keeps the booked door unless congestion / availability gives a real reason to move;
+    # either way this dry van must land at a dry dock (not a cold dock or a ground-level flatbed ramp)
+    assert ev["destination"].startswith("Dock door") and "(dry dock)" in ev["destination"]
+    yard = ev["detail"]["yard"]
+    if "D07" not in ev["destination"]:
+        assert any("booked door D07" in r for r in yard["reasons"]), yard["reasons"]
 
 
 def test_bad_inputs(client):

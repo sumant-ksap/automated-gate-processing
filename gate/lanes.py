@@ -26,7 +26,7 @@ import cv2
 import numpy as np
 
 from .pipeline import GatePipeline
-from .sim.scenarios import EXPECTED, build_scenario
+from .sim.scenarios import EXPECTED, build_for_appointment, build_scenario
 from .sim.synth import render_truck
 from .vision import ocr
 
@@ -143,7 +143,17 @@ class LaneManager:
         name, spec = build_scenario(self.pipeline.db, self._rng, scenario)
         frames = render_truck(spec, self._rng.randint(0, 2**31))
         meta = {"sim_scenario": name, "sim_expected": EXPECTED[name], "sim_truth": spec.to_dict()}
-        return self.submit(lane_id, [frames["side"], frames["rear"]], ["side", "rear"], meta)
+        return self.submit(lane_id, list(frames.values()), list(frames.keys()), meta)
+
+    def simulate_appointment(self, appointment_id: int, rng: random.Random | None = None):
+        """A tracked inbound truck reached the gate: render it and send it to the least busy lane."""
+        rng = rng or self._rng
+        name, expected, spec = build_for_appointment(self.pipeline.db, rng, appointment_id)
+        lane_id = min(self.lanes.values(), key=lambda l: (l.queue_depth, l.processed)).id
+        frames = render_truck(spec, rng.randint(0, 2**31))
+        meta = {"sim_scenario": name, "sim_expected": expected, "sim_truth": spec.to_dict(),
+                "source": "inbound-fleet"}
+        return self.submit(lane_id, list(frames.values()), list(frames.keys()), meta)
 
     def _sim_loop(self) -> None:
         next_due = {lid: 0.0 for lid in self.lanes}

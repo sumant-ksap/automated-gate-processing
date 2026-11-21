@@ -4,6 +4,7 @@
   python -m gate process side.jpg rear.jpg [--lane 1]
   python -m gate generate OUT_DIR [-n 10] [--scenario damaged]
   python -m gate evaluate [-n 45]
+  python -m gate verify
   python -m gate seed [--reset]
 """
 from __future__ import annotations
@@ -26,6 +27,7 @@ def cmd_serve(a) -> None:
     from .config import settings
     if a.simulate:
         settings.sim_autostart = True
+        settings.fleet_autostart = True
     from .api import create_app
     print(f"\n  Gate dashboard: http://{'localhost' if a.host in ('0.0.0.0', '127.0.0.1') else a.host}:{a.port}\n")
     uvicorn.run(create_app(settings), host=a.host, port=a.port, log_level="warning")
@@ -41,6 +43,8 @@ def _pipeline():
     db = Database(settings.db_path)
     if db.one("SELECT COUNT(*) AS n FROM carriers")["n"] == 0:
         seed_demo(db)
+    from .seed import ensure_carriers
+    ensure_carriers(db)
     return db, GatePipeline(db, settings, SimulatedGateController(auto_close_s=0.1))
 
 
@@ -77,8 +81,11 @@ def cmd_generate(a) -> None:
         for cam, img in frames.items():
             cv2.imwrite(str(out / f"truck{i:03d}_{name}__{cam}.jpg"), img)
         print(f"truck{i:03d}: {name:18} plate={spec.plate} trailer={spec.trailer_number} seal={spec.seal_number}")
-    print(f"\nWrote {a.n * 2} images to {out}. Process one with:\n"
-          f"  python -m gate process {out / 'truck000_*__side.jpg'} {out / 'truck000_*__rear.jpg'}")
+    first = sorted(out.glob("truck000_*__front.jpg"))
+    stem = first[0].name.replace("__front.jpg", "") if first else "truck000_<scenario>"
+    print(f"\nWrote {a.n * 3} images (front / side / rear camera) to {out}. Process one truck with:\n"
+          f"  python -m gate process {out / (stem + '__front.jpg')} {out / (stem + '__side.jpg')} "
+          f"{out / (stem + '__rear.jpg')}")
 
 
 def cmd_evaluate(a) -> None:
@@ -106,7 +113,7 @@ def cmd_evaluate(a) -> None:
         _, spec = build_scenario(db, rng, name)
         frames = render_truck(spec, rng.randint(0, 2**31))
         exp = dict((s[0], s[2]) for s in SCENARIOS)[name]
-        ev = pipe.process(1 + i % 4, [frames["side"], frames["rear"]], ["side", "rear"])
+        ev = pipe.process(1 + i % 4, list(frames.values()), list(frames.keys()))
         good = ev["decision"] == exp
         ok += good
         total += 1
@@ -115,9 +122,15 @@ def cmd_evaluate(a) -> None:
         mark = "ok " if good else "ERR"
         print(f"[{mark}] {name:18} expected {exp:13} got {ev['decision']:13} {ev['processing_ms']:5d} ms")
     print(f"\nDecision accuracy: {ok}/{total} = {100 * ok / total:.1f}%   "
-          f"avg {sum(ms) / len(ms):.0f} ms / truck (2 cameras)")
+          f"avg {sum(ms) / len(ms):.0f} ms / truck (3 cameras)")
     for n in names:
         print(f"  {n:18} {per[(n, True)]}/{per[(n, True)] + per[(n, False)]}")
+
+
+def cmd_verify(a) -> None:
+    """Acceptance check of all four feature areas on a fresh temporary database."""
+    from .verify import main as verify_main
+    verify_main(seed=a.seed)
 
 
 def cmd_seed(a) -> None:
@@ -154,6 +167,10 @@ def main(argv=None) -> None:
     s.add_argument("-n", type=int, default=45)
     s.add_argument("--seed", type=int, default=42)
     s.set_defaults(fn=cmd_evaluate)
+
+    s = sub.add_parser("verify", help="acceptance check of all features (gate, ETA, yard, driver messages)")
+    s.add_argument("--seed", type=int, default=2026)
+    s.set_defaults(fn=cmd_verify)
 
     s = sub.add_parser("seed", help="load demo carriers / ASNs / appointments")
     s.add_argument("-n", type=int, default=40)
