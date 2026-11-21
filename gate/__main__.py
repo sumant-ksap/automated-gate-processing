@@ -83,9 +83,9 @@ def cmd_generate(a) -> None:
         print(f"truck{i:03d}: {name:18} plate={spec.plate} trailer={spec.trailer_number} seal={spec.seal_number}")
     first = sorted(out.glob("truck000_*__front.jpg"))
     stem = first[0].name.replace("__front.jpg", "") if first else "truck000_<scenario>"
-    print(f"\nWrote {a.n * 3} images (front / side / rear camera) to {out}. Process one truck with:\n"
-          f"  python -m gate process {out / (stem + '__front.jpg')} {out / (stem + '__side.jpg')} "
-          f"{out / (stem + '__rear.jpg')}")
+    print(f"\nWrote {a.n * 4} images (front / left / right / rear camera) to {out}. Process one truck with:\n"
+          f"  python -m gate process {out / (stem + '__front.jpg')} {out / (stem + '__left.jpg')} "
+          f"{out / (stem + '__right.jpg')} {out / (stem + '__rear.jpg')}")
 
 
 def cmd_evaluate(a) -> None:
@@ -122,7 +122,7 @@ def cmd_evaluate(a) -> None:
         mark = "ok " if good else "ERR"
         print(f"[{mark}] {name:18} expected {exp:13} got {ev['decision']:13} {ev['processing_ms']:5d} ms")
     print(f"\nDecision accuracy: {ok}/{total} = {100 * ok / total:.1f}%   "
-          f"avg {sum(ms) / len(ms):.0f} ms / truck (3 cameras)")
+          f"avg {sum(ms) / len(ms):.0f} ms / truck (4 cameras)")
     for n in names:
         print(f"  {n:18} {per[(n, True)]}/{per[(n, True)] + per[(n, False)]}")
 

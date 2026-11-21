@@ -83,7 +83,7 @@ def main(seed: int = 2026) -> None:
     print(f"  Broken / missing seals flagged: {dmg['seal_flagged']}/{dmg['seal_n']}")
     print(f"  Correct gate decision (all 9 situations): {dec_ok}/{dec_n}")
     print(f"  GRANTED -> barrier opened + appointment marked arrived: {gate_ok}/{gate_n}")
-    print(f"  Decision time per truck (3 cameras): median {sorted(times)[len(times) // 2]} ms, max {max(times)} ms")
+    print(f"  Decision time per truck (4 cameras): median {sorted(times)[len(times) // 2]} ms, max {max(times)} ms")
 
     # multiple lanes at once
     futs, t0 = [], time.perf_counter()

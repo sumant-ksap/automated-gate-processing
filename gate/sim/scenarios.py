@@ -71,11 +71,11 @@ def _pick_appointment(db: Database, rng: random.Random) -> dict:
 def _random_damage(rng: random.Random) -> list[Damage]:
     out = []
     for _ in range(rng.choice([1, 1, 2])):
-        view = rng.choice(["side", "side", "rear"])
-        kind = rng.choice(["dent", "rust", "hole"] + (["scratch"] if view == "side" else []))
+        view = rng.choice(["left", "right", "rear"])
+        kind = rng.choice(["dent", "rust", "hole"] + (["scratch"] if view != "rear" else []))
         out.append(Damage(kind, view, rng.uniform(0.05, 0.95), rng.uniform(0.1, 0.9), rng.uniform(0.9, 1.3)))
     # keep side damages apart from each other
-    side = [d for d in out if d.view == "side"]
+    side = [d for d in out if d.view in ("left", "right") and d.view == out[0].view]
     if len(side) == 2 and abs(side[0].rx - side[1].rx) < 0.3:
         side[1].rx = (side[0].rx + 0.5) % 1.0
     return out

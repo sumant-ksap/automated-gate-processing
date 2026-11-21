@@ -38,7 +38,8 @@ def test_reader_reads_all_identifiers():
     assert r["seal"].value == "SL4821930"
 
 
-@pytest.mark.parametrize("kind,view", [("dent", "side"), ("rust", "rear"), ("hole", "side"), ("scratch", "side")])
+@pytest.mark.parametrize("kind,view", [("dent", "left"), ("rust", "rear"), ("hole", "right"), ("scratch", "right"),
+                                       ("dent", "side")])
 def test_damage_detector_finds_damage(kind, view):
     spec = TruckSpec(**SPEC, damages=[Damage(kind, view, 0.4, 0.5)])
     frames = [f for k, f in render_truck(spec, seed=2).items() if k != "front"]
@@ -81,7 +82,7 @@ def test_override_opens_gate(env):
     assert ctrl.get(3) == "OPEN"
 
 
-def test_blurred_side_camera_routes_to_inspection(env):
+def test_blurred_side_camera_routes_to_inspection(env):  # left side fogged, right side still clear
     """IDs still readable (front plate, rear trailer + seal) but the side camera is too poor
     to judge trailer damage -> inspection bay instead of assuming the trailer is fine."""
     import cv2
@@ -89,12 +90,13 @@ def test_blurred_side_camera_routes_to_inspection(env):
     rng = random.Random(21)
     _, spec = build_scenario(db, rng, "healthy")
     frames = render_truck(spec, seed=7)
-    frames["side"] = cv2.GaussianBlur(frames["side"], (0, 0), 9)          # fogged / dirty side lens
+    frames["left"] = cv2.GaussianBlur(frames["left"], (0, 0), 9)          # fogged / dirty left-side lens
     ev = pipe.process(4, list(frames.values()), list(frames.keys()))
     codes = [r["code"] for r in ev["reasons"]]
     assert "NOT_INSPECTED" in codes, ev["reasons"]
     assert ev["decision"] == "INSPECTION"
-    assert ev["detail"]["image_sharpness"]["side"] < pipe.settings.min_sharpness
+    assert ev["detail"]["image_sharpness"]["left"] < pipe.settings.min_sharpness
+    assert ev["detail"]["image_sharpness"]["right"] >= pipe.settings.min_sharpness
     assert ev["detail"]["image_sharpness"]["rear"] >= pipe.settings.min_sharpness
 
 

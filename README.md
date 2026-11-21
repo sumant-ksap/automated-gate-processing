@@ -24,11 +24,15 @@ truck in the queue. Several lanes are processed at the same time.
 | Camera | Reads | Damage inspection |
 |---|---|---|
 | **front** (LPR) | license plate | no (it sees the cab, not the trailer) |
-| **side** | USDOT number, trailer number | trailer side panel |
+| **left** side | USDOT number, trailer number | left trailer panel |
+| **right** side | USDOT number, trailer number | right trailer panel |
 | **rear** | trailer number, bolt-seal number | rear doors |
 
-Name cameras `front`, `side` and `rear` (`names` in `GATE_LANE_SOURCES`, or the `__front` / `__side` / `__rear`
-suffix on uploaded file names) so that only the trailer cameras are used for damage inspection.
+Both sides are filmed because damage can be on either side of a trailer; reading the USDOT and trailer number
+from two sides also confirms them. Name cameras `front`, `left`, `right` and `rear` (`names` in
+`GATE_LANE_SOURCES`, or the `__front` / `__left` / `__right` / `__rear` suffix on uploaded file names) so that only
+the trailer cameras are used for damage inspection. Any camera may be left out; the more of them, the more is
+checked.
 
 ### Gate decisions
 
@@ -58,7 +62,7 @@ pip install -r requirements.txt
 python -m gate serve --simulate   # dashboard at http://localhost:8000
 ```
 
-`--simulate` starts both simulators. The gate simulator renders synthetic front, side and rear camera
+`--simulate` starts both simulators. The gate simulator renders synthetic front, left, right and rear camera
 frames for every lane and mixes in healthy trucks, damaged trailers, broken seals,
 unscheduled trucks, suspended carriers, wrong trailers and unreadable (dirty-lens)
 frames. The **Simulator decision accuracy** tile shows how often the pipeline made the
@@ -76,7 +80,7 @@ python -m gate generate samples -n 10 [--scenario damaged]
 python -m gate evaluate -n 90                          # end-to-end accuracy report
 python -m gate seed --reset                            # reload demo carriers/ASNs/appointments
 python -m gate verify                                  # acceptance check of all 4 feature areas (~3 min)
-pytest                                                 # 53 tests
+pytest                                                 # 54 tests
 ```
 
 ## Connecting real cameras
@@ -85,7 +89,7 @@ Set `GATE_LANE_SOURCES` (JSON) to choose how each lane gets its images. Lanes no
 listed are fed by the simulator or the API.
 
 ```bash
-set GATE_LANE_SOURCES={"1": {"type": "camera", "uris": ["rtsp://10.0.0.20/stream", "rtsp://10.0.0.21/stream", "rtsp://10.0.0.22/stream"], "names": ["front", "side", "rear"]}, "2": {"type": "folder", "path": "D:/gate/lane2"}}
+set GATE_LANE_SOURCES={"1": {"type": "camera", "uris": ["rtsp://10.0.0.20/stream", "rtsp://10.0.0.21/stream", "rtsp://10.0.0.22/stream", "rtsp://10.0.0.23/stream"], "names": ["front", "left", "right", "rear"]}, "2": {"type": "folder", "path": "D:/gate/lane2"}}
 ```
 
 * **camera**: OpenCV `VideoCapture` (RTSP/HTTP URL or USB index). Motion on the first
@@ -185,7 +189,7 @@ receives it, then **Open the driver's phone page**.
 | `GATE_EARLY_MIN` / `GATE_LATE_MIN` / `GATE_ON_TIME_MIN` | 120 / 240 / 30 | appointment window in minutes (on-time → straight to the dock) |
 | `GATE_DAMAGE_MODEL` / `GATE_DAMAGE_CLASSES` | – | YOLOv8 ONNX damage model and its class names |
 | `GATE_DAMAGE_MIN_AREA` | 500 | smallest damage blob, in pixels |
-| `GATE_MIN_SHARPNESS` | 20 | side/rear frames below this sharpness aren't trusted for damage; the truck goes to inspection. Calibrate per camera from `image_sharpness` in event details |
+| `GATE_MIN_SHARPNESS` | 20 | left/right/rear frames below this sharpness aren't trusted for damage; the truck goes to inspection. Calibrate per camera from `image_sharpness` in event details |
 | `GATE_CONTROLLER_URL` | – | POST `{"lane", "command": "OPEN"/"CLOSED"}` to a barrier PLC/relay |
 | `GATE_SIM_INTERVAL` / `GATE_SIM_AUTOSTART` | 6 / false | simulator headway per lane, and whether it starts automatically |
 | `GATE_DATA_DIR` | `./data` | SQLite DB and event images |

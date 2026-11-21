@@ -1,10 +1,10 @@
 """Synthetic camera frames of trucks arriving at the gate.
 
-Each arriving truck is captured by three cameras per lane:
-  * front camera - license plate recognition (LPR), head-on
-  * side camera  - tractor door (USDOT number) and trailer side panel
-                   (trailer number, side damage)
-  * rear camera - trailer doors (trailer number, bolt seal, door damage)
+Each arriving truck is captured by four cameras per lane:
+  * front camera       - license plate recognition (LPR), head-on
+  * left / right side  - tractor doors (USDOT number) and both trailer side
+                         panels (trailer number, damage on either side)
+  * rear camera        - trailer doors (trailer number, bolt seal, door damage)
 
 The frames are rendered with OpenCV and then degraded (noise, blur, lighting)
 so the OCR / damage pipeline has to do real work. This lets the whole system
@@ -29,7 +29,7 @@ DAMAGE_KINDS = ("dent", "rust", "hole", "scratch")
 @dataclass
 class Damage:
     kind: str                 # dent | rust | hole | scratch
-    view: str = "side"        # side | rear
+    view: str = "left"        # left | right | rear  ("side" = left, older name)
     # relative position inside the panel (0..1)
     rx: float = 0.5
     ry: float = 0.5
@@ -147,7 +147,9 @@ def _draw_ribs(img, panel, color, step=56):
 # --------------------------------------------------------------------------
 # frames
 # --------------------------------------------------------------------------
-def render_side(spec: TruckSpec, rng: random.Random) -> np.ndarray:
+def render_side(spec: TruckSpec, rng: random.Random, side: str = "left") -> np.ndarray:
+    """Side camera. 'left' = driver's side (cab on the left of the image); 'right' = the other side of the
+    truck: the same body seen mirrored (cab on the right), but with readable, un-mirrored lettering."""
     img = _background(rng)
     tc = spec.trailer_color
     # trailer box
@@ -160,12 +162,6 @@ def render_side(spec: TruckSpec, rng: random.Random) -> np.ndarray:
     for wx in (980, 1080, 1150):
         cv2.circle(img, (wx, 560), 42, (25, 25, 25), -1)
         cv2.circle(img, (wx, 560), 18, (140, 140, 140), -1)
-    # carrier name on trailer
-    name = spec.carrier_name.upper()
-    scale = min(2.2, 760 / max(1, _text_size(name, 1.0, 4)[0]))
-    _centered_text(img, name, 820, 330, scale, (120, 60, 30), 4)
-    # trailer number (upper right of the side panel, as painted on real trailers)
-    _text(img, spec.trailer_number, (870, 180), 1.15, (20, 20, 20), 2)
 
     # tractor
     cc = spec.cab_color
@@ -178,9 +174,7 @@ def render_side(spec: TruckSpec, rng: random.Random) -> np.ndarray:
     door = (140, 305, 325, 455)
     cv2.rectangle(img, door[:2], door[2:], tuple(min(255, int(c) + 25) for c in cc), -1)
     cv2.rectangle(img, door[:2], door[2:], (20, 20, 20), 2)
-    cv2.rectangle(img, (150, 370), (318, 430), (245, 245, 245), -1)
-    _centered_text(img, "USDOT", 234, 393, 0.62, (10, 10, 10), 2)
-    _centered_text(img, spec.dot_number, 234, 423, 0.8, (10, 10, 10), 2)
+    cv2.rectangle(img, (150, 370), (318, 430), (245, 245, 245), -1)      # USDOT placard (text added below)
     # wheels
     for wx in (185, 335):
         cv2.circle(img, (wx, 560), 45, (25, 25, 25), -1)
@@ -188,9 +182,24 @@ def render_side(spec: TruckSpec, rng: random.Random) -> np.ndarray:
     # front bumper (the license plate faces forward - read by the front camera)
     cv2.rectangle(img, (55, 470), (110, 520), (160, 160, 165), -1)
 
+    views = ("left", "side") if side == "left" else ("right",)       # "side" = older name for the left side
     for d in spec.damages:
-        if d.view == "side":
+        if d.view in views:
             _draw_damage(img, d, (panel[0] + 10, 360, panel[2] - 10, panel[3] - 5), tc, rng)
+
+    mirror = side == "right"
+    if mirror:
+        img = cv2.flip(img, 1)
+    mx = (lambda x: W - x) if mirror else (lambda x: x)
+    # lettering is painted readable on both sides of a real truck, so it is never mirrored
+    name = spec.carrier_name.upper()
+    scale = min(2.2, 760 / max(1, _text_size(name, 1.0, 4)[0]))
+    _centered_text(img, name, mx(820), 330, scale, (120, 60, 30), 4)
+    tw, _ = _text_size(spec.trailer_number, 1.15, 2)
+    # trailer number near the rear top corner of the panel (rear is on the right on the left side, and vice versa)
+    _text(img, spec.trailer_number, (870 if not mirror else W - 870 - tw, 180), 1.15, (20, 20, 20), 2)
+    _centered_text(img, "USDOT", mx(234), 393, 0.62, (10, 10, 10), 2)
+    _centered_text(img, spec.dot_number, mx(234), 423, 0.8, (10, 10, 10), 2)
     return img
 
 
@@ -306,6 +315,7 @@ def render_truck(spec: TruckSpec, seed: int | None = None) -> dict[str, np.ndarr
     rng = random.Random(seed)
     return {
         "front": _degrade(render_front(spec, rng), rng, spec.quality),
-        "side": _degrade(render_side(spec, rng), rng, spec.quality),
+        "left": _degrade(render_side(spec, rng, "left"), rng, spec.quality),
+        "right": _degrade(render_side(spec, rng, "right"), rng, spec.quality),
         "rear": _degrade(render_rear(spec, rng), rng, spec.quality),
     }

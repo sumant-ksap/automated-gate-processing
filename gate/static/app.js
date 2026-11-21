@@ -35,7 +35,7 @@ function renderLane(lane) {
   }
   const ev = l.event;
   const all = ev ? ev.images : [];
-  const main = all.find((i) => i.camera === "side") || all[0];
+  const main = all.find((i) => i.camera === "left" || i.camera === "side") || all[0];
   const imgs = main ? [main, ...all.filter((i) => i !== main)] : [];
   const scen = Object.keys(state.scenarios).map((s) => `<option value="${esc(s)}">${esc(s.replace(/_/g, " "))}</option>`).join("");
   el.innerHTML = `
@@ -130,7 +130,7 @@ function renderExceptions() {
   $("#kExc").textContent = list.length;
   $("#excList").innerHTML = list.map((ev) => `
     <div class="exc ${esc(ev.decision)}">
-      ${ev.images.length ? `<img src="${img((ev.images.find((i) => i.camera === (ev.decision === "HOLD" ? "rear" : "side")) || ev.images[0]).annotated)}" data-ev="${ev.id}" alt="">` : "<div></div>"}
+      ${ev.images.length ? `<img src="${img((ev.images.find((i) => i.camera === (ev.decision === "HOLD" ? "rear" : "left")) || ev.images[0]).annotated)}" data-ev="${ev.id}" alt="">` : "<div></div>"}
       <div>
         <div>${badge(ev.decision)} <b>Lane ${ev.lane_id}</b> · ${fmtTime(ev.created_at)} · ${esc(ev.carrier_name || "unknown carrier")}</div>
         <ul class="reasons">${ev.reasons.filter((r) => r.decision !== "GRANTED").map((r) => `<li>${esc(r.message)}</li>`).join("")}</ul>
